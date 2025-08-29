@@ -1,0 +1,696 @@
+# resume_parser.py
+# This file contains all the logic to read PDF resumes and extract information
+
+# Import all the libraries we need
+import PyPDF2          # For reading PDF files
+import pandas as pd    # For creating Excel files
+import re             # For finding patterns in text (like email, phone)
+import spacy          # For understanding language and finding names
+from collections import Counter  # For counting things
+import os             # For working with files and folders
+from datetime import datetime    # For working with dates
+import json           # For working with data
+from sklearn.feature_extraction.text import TfidfVectorizer  # For comparing text
+from sklearn.metrics.pairwise import cosine_similarity      # For calculating similarity
+import numpy as np    # For mathematical calculations
+
+class ResumeParser:
+    """
+    This class is like a smart robot that can read PDF resumes 
+    and extract important information like name, email, phone number etc.
+    """
+    
+    def __init__(self):
+        """
+        This runs when we create a new ResumeParser
+        It sets up everything we need to understand resumes
+        """
+        
+        # Try to load the language understanding model
+        # This helps us find names and understand English text
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+            print("✅ Language model loaded successfully!")
+        except OSError:
+            print("❌ Please install language model: python -m spacy download en_core_web_sm")
+            self.nlp = None
+        
+        # This is our database of common job skills
+        # We look for these skills in every resume
+        # You can add more skills here if needed
+        self.skills_database = [
+            # Programming Languages
+            'Python', 'Java', 'JavaScript', 'C++', 'C#', 'PHP', 'Ruby', 'Go', 'Rust',
+            
+            # Web Technologies
+            'HTML', 'CSS', 'React', 'Angular', 'Vue.js', 'Node.js', 'Django', 'Flask',
+            
+            # Databases
+            'SQL', 'MySQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Elasticsearch',
+            
+            # Cloud & DevOps
+            'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'Git',
+            
+            # Data Science & AI
+            'Machine Learning', 'Deep Learning', 'TensorFlow', 'PyTorch', 'Scikit-learn',
+            'Data Analysis', 'Pandas', 'NumPy', 'Matplotlib', 'Seaborn',
+            
+            # Project Management
+            'Project Management', 'Agile', 'Scrum', 'JIRA', 'Confluence',
+            
+            # Operating Systems & Tools
+            'Linux', 'Windows', 'MacOS', 'Bash', 'PowerShell',
+            
+            # Business Skills
+            'Excel', 'PowerPoint', 'Communication', 'Leadership', 'Teamwork'
+        ]
+
+    def extract_text_from_pdf(self, pdf_path):
+        """
+        This function opens a PDF file and converts it to readable text
+        
+        Input: Path to PDF file (like "resume.pdf")
+        Output: All text content from the PDF as a string
+        """
+        try:
+            # Open the PDF file in read mode
+            with open(pdf_path, 'rb') as file:
+                # Create a PDF reader object
+                pdf_reader = PyPDF2.PdfReader(file)
+                text = ""
+                
+                # Read each page of the PDF
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+                
+                print(f"✅ Successfully extracted text from {os.path.basename(pdf_path)}")
+                return text
+        
+        except Exception as e:
+            # If something goes wrong, print error and return empty text
+            print(f"❌ Error reading {pdf_path}: {str(e)}")
+            return ""
+
+    def extract_email(self, text):
+        """
+        This function finds email addresses in the resume text
+        
+        Input: Resume text
+        Output: First email address found, or empty string if none found
+        """
+        
+        # This pattern looks for email addresses like: name@company.com
+        # It checks for letters, numbers, dots, underscores before @ symbol
+        # Then letters, numbers, dots after @ symbol
+        # Then a dot and 2-4 letters for domain extension
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        
+        # Search for all email patterns in the text
+        emails = re.findall(email_pattern, text)
+        
+        # Return the first email found, or empty string if no emails
+        if emails:
+            print(f"📧 Found email: {emails[0]}")
+            return emails[0]
+        else:
+            print("❌ No email address found")
+            return ""
+
+    def extract_phone(self, text):
+        """
+        This function finds phone numbers in the resume text
+        It looks for different phone number formats
+        
+        Input: Resume text
+        Output: First phone number found, or empty string if none found
+        """
+        
+        # Different patterns for phone numbers:
+        phone_patterns = [
+            r'\+\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}',  # +1-234-567-8900
+            r'\d{10}',                                                 # 1234567890
+            r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',                        # (123) 456-7890
+            r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}'                          # 123-456-7890
+        ]
+        
+        # Try each pattern until we find a phone number
+        for pattern in phone_patterns:
+            phones = re.findall(pattern, text)
+            if phones:
+                print(f"📞 Found phone: {phones[0]}")
+                return phones[0]
+        
+        print("❌ No phone number found")
+        return ""
+
+    def extract_name(self, text):
+        """
+        This function tries to find the candidate's name from the resume
+        It uses AI language processing to identify person names
+        
+        Input: Resume text
+        Output: Candidate's name, or empty string if not found
+        """
+        
+        # If language model is not available, use simple method
+        if self.nlp is None:
+            print("⚠️ Using basic name extraction (no AI model)")
+            
+            # Split text into lines and look at first few lines
+            lines = text.strip().split('\n')
+            for line in lines[:5]:  # Check first 5 lines only
+                line = line.strip()
+                
+                # Skip lines that contain common resume keywords
+                skip_keywords = ['email', 'phone', 'mobile', 'address', 'objective', 'resume', 'cv']
+                if line and not any(keyword in line.lower() for keyword in skip_keywords):
+                    # Clean the line and check if it looks like a name
+                    name = re.sub(r'[^\w\s]', '', line)[:50]  # Remove special characters
+                    if len(name.split()) >= 2:  # Name should have at least 2 words
+                        print(f"👤 Found name (basic method): {name}")
+                        return name
+            
+            print("❌ No name found using basic method")
+            return ""
+        
+        # Use AI model to find person names
+        # Only check first 1000 characters for speed
+        doc = self.nlp(text[:1000])
+        names = []
+        
+        # Look for entities that are tagged as "PERSON"
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                names.append(ent.text)
+        
+        if names:
+            print(f"👤 Found name (AI method): {names[0]}")
+            return names[0]
+        else:
+            print("❌ No name found using AI method")
+            return ""
+
+    def extract_skills(self, text):
+        """
+        This function finds technical and professional skills in the resume
+        It compares resume text with our skills database
+        
+        Input: Resume text
+        Output: Comma-separated string of found skills
+        """
+        
+        # Convert text to lowercase for case-insensitive matching
+        text_lower = text.lower()
+        found_skills = []
+        
+        # Check each skill in our database
+        for skill in self.skills_database:
+            if skill.lower() in text_lower:
+                found_skills.append(skill)
+        
+        # Limit to top 10 skills to keep it manageable
+        skills_text = ', '.join(found_skills[:10])
+        
+        if found_skills:
+            print(f"🔧 Found {len(found_skills)} skills: {skills_text[:100]}...")
+        else:
+            print("❌ No skills found from our database")
+        
+        return skills_text
+
+    def extract_experience_years(self, text):
+        """
+        This function finds how many years of experience the candidate has
+        It looks for patterns like "5 years experience" or "3 yrs exp"
+        
+        Input: Resume text
+        Output: Number of years as string, or empty string if not found
+        """
+        
+        # Different patterns for experience mentions:
+        experience_patterns = [
+            r'(\d+)[\+]?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',  # "5 years of experience"
+            r'(?:experience|exp).*?(\d+)[\+]?\s*(?:years?|yrs?)',           # "experience: 5 years"
+            r'(\d+)[\+]?\s*(?:years?|yrs?)'                                  # "5 years" or "5+"
+        ]
+        
+        text_lower = text.lower()
+        max_years = 0
+        
+        # Try each pattern and find the highest number
+        for pattern in experience_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                try:
+                    years = int(match)
+                    # Only accept reasonable numbers (not more than 50 years)
+                    if years > max_years and years <= 50:
+                        max_years = years
+                except:
+                    continue  # Skip if we can't convert to number
+        
+        if max_years > 0:
+            print(f"💼 Found experience: {max_years} years")
+            return str(max_years)
+        else:
+            print("❌ No experience years found")
+            return ""
+
+    def extract_recent_designation(self, text):
+        """
+        This function finds the candidate's most recent job title
+        It looks for common job titles and positions
+        
+        Input: Resume text
+        Output: Job title/designation, or empty string if not found
+        """
+        
+        # Patterns for finding job titles
+        title_patterns = [
+            r'(?:current|present|recent).*?(?:role|position|title|designation).*?:?\s*([^\n]+)',
+            r'(?:working|employed)\s+as\s+([^\n]+)',
+            r'(?:senior|junior|lead|principal|chief|head)\s+([^\n]+)',
+        ]
+        
+        # Split text into lines
+        lines = text.split('\n')
+        
+        # Look for job titles in first 20 lines (usually at top of resume)
+        for i, line in enumerate(lines[:20]):
+            line = line.strip()
+            
+            # Check if line contains common job title keywords
+            job_keywords = [
+                'engineer', 'developer', 'manager', 'analyst', 'consultant',
+                'specialist', 'coordinator', 'executive', 'director', 'lead',
+                'senior', 'junior', 'associate', 'officer', 'supervisor'
+            ]
+            
+            if any(keyword in line.lower() for keyword in job_keywords):
+                # Clean the designation (remove special characters)
+                designation = re.sub(r'[^\w\s-]', '', line)[:100]
+                if designation:
+                    print(f"💼 Found designation: {designation}")
+                    return designation
+        
+        print("❌ No job designation found")
+        return ""
+
+    def extract_work_profile(self, text):
+        """
+        This function finds company names where the candidate has worked
+        It looks for patterns that indicate company names
+        
+        Input: Resume text
+        Output: Company names separated by |, or empty string if none found
+        """
+        
+        companies = []
+        
+        # Patterns for finding company names
+        company_patterns = [
+            # Look for "at CompanyName" or "@CompanyName"
+            r'(?:at|@)\s+([A-Z][A-Za-z\s&]+(?:Ltd|Inc|Corp|Company|Technologies|Solutions|Systems))',
+            # Look for company suffixes
+            r'([A-Z][A-Za-z\s&]+(?:Ltd|Inc|Corp|Company|Technologies|Solutions|Systems))',
+        ]
+        
+        for pattern in company_patterns:
+            matches = re.findall(pattern, text)
+            companies.extend(matches[:5])  # Limit to 5 companies max
+        
+        # Remove duplicates and join with |
+        unique_companies = list(set(companies))
+        work_profile = ' | '.join(unique_companies) if unique_companies else ""
+        
+        if unique_companies:
+            print(f"🏢 Found companies: {work_profile}")
+        else:
+            print("❌ No company names found")
+        
+        return work_profile
+
+    def parse_single_resume(self, pdf_path):
+        """
+        This is the main function that processes one resume PDF file
+        It extracts all the information we need and returns it as a dictionary
+        
+        Input: Path to PDF file
+        Output: Dictionary with all extracted information
+        """
+        
+        print(f"\n🔍 Processing: {os.path.basename(pdf_path)}")
+        print("-" * 50)
+        
+        # Step 1: Extract text from PDF
+        text = self.extract_text_from_pdf(pdf_path)
+        if not text:
+            print("❌ Could not extract text from PDF")
+            return None
+        
+        # Step 2: Extract all information from the text
+        resume_data = {
+            'File Name': os.path.basename(pdf_path),           # Original PDF filename
+            'Name': self.extract_name(text),                   # Candidate name
+            'Email': self.extract_email(text),                 # Email address
+            'Mobile': self.extract_phone(text),                # Phone number
+            'Experience (Years)': self.extract_experience_years(text),  # Years of experience
+            'Skills': self.extract_skills(text),               # Technical skills
+            'Recent Designation': self.extract_recent_designation(text), # Job title
+            'Work Profile': self.extract_work_profile(text),   # Company names
+            'Full Text': text  # Store complete text for fit score calculation
+        }
+        
+        print("✅ Resume processing completed!")
+        print(f"   Name: {resume_data['Name'] or 'Not found'}")
+        print(f"   Email: {resume_data['Email'] or 'Not found'}")
+        print(f"   Skills: {len(resume_data['Skills'].split(',')) if resume_data['Skills'] else 0} found")
+        
+        return resume_data
+
+    def parse_bulk_resumes(self, folder_path):
+        """
+        This function processes multiple PDF resumes from a folder
+        It calls parse_single_resume for each PDF file
+        
+        Input: Path to folder containing PDF files
+        Output: List of dictionaries, each containing resume information
+        """
+        
+        print(f"🚀 Starting bulk processing from: {folder_path}")
+        print("=" * 60)
+        
+        resume_data = []
+        pdf_count = 0
+        
+        # Get list of all files in the folder
+        try:
+            files = os.listdir(folder_path)
+        except:
+            print(f"❌ Could not access folder: {folder_path}")
+            return []
+        
+        # Process each PDF file
+        for filename in files:
+            if filename.lower().endswith('.pdf'):
+                pdf_count += 1
+                pdf_path = os.path.join(folder_path, filename)
+                
+                # Process this PDF
+                data = self.parse_single_resume(pdf_path)
+                if data:
+                    resume_data.append(data)
+                    print(f"✅ Successfully processed: {filename}")
+                else:
+                    print(f"❌ Failed to process: {filename}")
+        
+        print("\n" + "=" * 60)
+        print(f"📊 BULK PROCESSING SUMMARY:")
+        print(f"   Total PDF files found: {pdf_count}")
+        print(f"   Successfully processed: {len(resume_data)}")
+        print(f"   Failed to process: {pdf_count - len(resume_data)}")
+        
+        return resume_data
+
+    def save_to_excel(self, resume_data, output_path='resume_data.xlsx'):
+        """
+        This function saves all extracted resume data to an Excel file
+        
+        Input: List of resume data dictionaries and output file path
+        Output: Path to created Excel file
+        """
+        
+        print(f"\n💾 Saving data to Excel file: {output_path}")
+        
+        if not resume_data:
+            print("❌ No data to save!")
+            return None
+        
+        # Prepare data for Excel (remove full text to keep file size small)
+        excel_data = []
+        for resume in resume_data:
+            excel_resume = {k: v for k, v in resume.items() if k != 'Full Text'}
+            excel_data.append(excel_resume)
+        
+        # Create Excel file
+        try:
+            df = pd.DataFrame(excel_data)
+            df.to_excel(output_path, index=False)
+            print(f"✅ Excel file created successfully!")
+            print(f"   File location: {output_path}")
+            print(f"   Records saved: {len(excel_data)}")
+            return output_path
+        
+        except Exception as e:
+            print(f"❌ Error creating Excel file: {str(e)}")
+            return None
+
+
+class FitScoreCalculator:
+    """
+    This class calculates how well a resume matches a job description
+    It uses artificial intelligence to compare the texts and give a percentage score
+    """
+    
+    def __init__(self):
+        """
+        Set up the text comparison tool
+        This tool converts text into numbers so we can compare them mathematically
+        """
+        # TfidfVectorizer converts text into numerical vectors for comparison
+        # stop_words='english' means ignore common words like 'the', 'and', 'is'
+        # max_features=1000 means only use top 1000 most important words
+        self.vectorizer = TfidfVectorizer(stop_words='english', max_features=1000)
+        print("🤖 Fit Score Calculator initialized!")
+    
+    def calculate_fit_scores(self, resume_data, job_description):
+        """
+        This is the main function that calculates fit scores for all resumes
+        against a job description
+        
+        Input: List of resume data and job description text
+        Output: List of resumes with fit scores added
+        """
+        
+        print(f"\n🎯 Calculating fit scores for {len(resume_data)} resumes")
+        print("-" * 50)
+        
+        if not resume_data:
+            print("❌ No resume data provided!")
+            return []
+        
+        if not job_description:
+            print("❌ No job description provided!")
+            return []
+        
+        # Step 1: Prepare texts for comparison
+        print("📝 Preparing resume texts for analysis...")
+        resume_texts = [resume['Full Text'] for resume in resume_data]
+        all_texts = resume_texts + [job_description]  # Add job description at the end
+        
+        print(f"   Analyzing {len(resume_texts)} resumes against job description")
+        
+        # Step 2: Convert all texts to numerical vectors
+        print("🔢 Converting texts to numerical format...")
+        try:
+            tfidf_matrix = self.vectorizer.fit_transform(all_texts)
+        except Exception as e:
+            print(f"❌ Error in text analysis: {str(e)}")
+            return resume_data
+        
+        # Step 3: Calculate similarity scores
+        print("⚖️ Calculating similarity scores...")
+        
+        # The job description vector is the last one
+        jd_vector = tfidf_matrix[-1]
+        # All resume vectors are before the last one
+        resume_vectors = tfidf_matrix[:-1]
+        
+        # Calculate how similar each resume is to the job description
+        # This returns values between 0 (no match) and 1 (perfect match)
+        scores = cosine_similarity(resume_vectors, jd_vector).flatten()
+        
+        # Step 4: Process each resume and add fit score
+        scored_resumes = []
+        for i, resume in enumerate(resume_data):
+            # Convert score to percentage (0-100%)
+            fit_score = round(scores[i] * 100, 2)
+            
+            # Create new resume data with fit score
+            resume_with_score = resume.copy()
+            resume_with_score['Fit Score'] = fit_score
+            
+            # Find what matches and what doesn't match
+            match_points, non_match_points = self.get_match_points(
+                resume['Full Text'], job_description
+            )
+            resume_with_score['Match Points'] = match_points
+            resume_with_score['Non-Match Points'] = non_match_points
+            
+            scored_resumes.append(resume_with_score)
+            
+            # Print progress
+            score_level = "🟢 High" if fit_score >= 70 else "🟡 Medium" if fit_score >= 50 else "🔴 Low"
+            print(f"   {resume['Name'] or 'Unknown'}: {fit_score}% {score_level}")
+        
+        # Step 5: Sort resumes by fit score (highest first)
+        scored_resumes.sort(key=lambda x: x['Fit Score'], reverse=True)
+        
+        print("\n📊 FIT SCORE SUMMARY:")
+        high_scores = sum(1 for r in scored_resumes if r['Fit Score'] >= 70)
+        medium_scores = sum(1 for r in scored_resumes if r['Fit Score'] >= 50 and r['Fit Score'] < 70)
+        low_scores = sum(1 for r in scored_resumes if r['Fit Score'] < 50)
+        
+        print(f"   🟢 High fit (70%+): {high_scores} candidates")
+        print(f"   🟡 Medium fit (50-69%): {medium_scores} candidates")
+        print(f"   🔴 Low fit (<50%): {low_scores} candidates")
+        
+        return scored_resumes
+    
+    def get_match_points(self, resume_text, job_description):
+        """
+        This function identifies specific words that match and don't match
+        between the resume and job description
+        
+        Input: Resume text and job description
+        Output: Two strings - matching words and non-matching words
+        """
+        
+        # Extract important words from both texts (3+ letters only)
+        jd_words = set(re.findall(r'\b[A-Za-z]{3,}\b', job_description.lower()))
+        resume_words = set(re.findall(r'\b[A-Za-z]{3,}\b', resume_text.lower()))
+        
+        # Remove very common English words that don't add meaning
+        common_words = {
+            'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 
+            'with', 'by', 'this', 'that', 'these', 'those', 'will', 'have', 
+            'has', 'had', 'are', 'is', 'was', 'were', 'been', 'be', 'being',
+            'can', 'could', 'should', 'would', 'may', 'might', 'must', 'shall',
+            'from', 'up', 'down', 'out', 'over', 'under', 'again', 'further',
+            'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how',
+            'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other',
+            'some', 'such', 'only', 'own', 'same', 'so', 'than', 'too', 'very'
+        }
+        
+        # Remove common words from both sets
+        jd_words -= common_words
+        resume_words -= common_words
+        
+        # Find words that appear in both (matches)
+        matches = list(jd_words.intersection(resume_words))[:10]  # Limit to 10
+        
+        # Find words from job description that are NOT in resume (non-matches)
+        non_matches = list(jd_words - resume_words)[:10]  # Limit to 10
+        
+        return ', '.join(matches), ', '.join(non_matches)
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    """
+    This section runs when you execute this file directly
+    It shows how to use the resume parser and fit score calculator
+    """
+    
+    print("🚀 RESUME PARSER & FIT SCORE CALCULATOR")
+    print("=" * 60)
+    
+    # Step 1: Create a resume parser
+    print("🤖 Initializing Resume Parser...")
+    parser = ResumeParser()
+    
+    # Step 2: Set the folder path where your PDF resumes are stored
+    # CHANGE THIS PATH TO YOUR RESUME FOLDER!
+    resume_folder = "resumes/"  
+    print(f"📁 Looking for resumes in: {resume_folder}")
+    
+    # Check if folder exists
+    if not os.path.exists(resume_folder):
+        print(f"❌ Folder does not exist: {resume_folder}")
+        print("Please create this folder and add some PDF resumes to it.")
+        print("Or change the 'resume_folder' path in the code.")
+        exit()
+    
+    # Step 3: Process all resumes in the folder
+    resume_data = parser.parse_bulk_resumes(resume_folder)
+    
+    if not resume_data:
+        print("❌ No resumes were processed successfully.")
+        print("Please check if there are valid PDF files in the folder.")
+        exit()
+    
+    # Step 4: Save extracted data to Excel file
+    excel_file = parser.save_to_excel(resume_data)
+    
+    # Step 5: Calculate fit scores (example)
+    print("\n🎯 CALCULATING FIT SCORES")
+    print("=" * 60)
+    
+    # Example job description - CHANGE THIS TO YOUR ACTUAL JOB REQUIREMENT!
+    job_description = """
+    We are looking for a Senior Python Developer with 5+ years of experience.
+    
+    Required Skills:
+    - Python programming
+    - Django or Flask framework
+    - PostgreSQL or MySQL database
+    - AWS cloud services
+    - Docker containerization
+    - Git version control
+    
+    Preferred Skills:
+    - Machine learning experience
+    - Data analysis with Pandas
+    - React or Angular frontend
+    - Agile development methodology
+    
+    Responsibilities:
+    - Develop and maintain web applications
+    - Work with cross-functional teams
+    - Mentor junior developers
+    - Participate in code reviews
+    
+    Requirements:
+    - Bachelor's degree in Computer Science or related field
+    - 5+ years of software development experience
+    - Strong communication skills
+    - Experience with cloud platforms
+    """
+    
+    # Create fit score calculator
+    fit_calculator = FitScoreCalculator()
+    
+    # Calculate fit scores for all resumes
+    scored_resumes = fit_calculator.calculate_fit_scores(resume_data, job_description)
+    
+    # Step 6: Display top candidates
+    print("\n🏆 TOP CANDIDATES:")
+    print("=" * 60)
+    
+    for i, resume in enumerate(scored_resumes[:5]):  # Show top 5 candidates
+        print(f"\nRANK #{i+1}")
+        print(f"Name: {resume['Name'] or 'Unknown'}")
+        print(f"Email: {resume['Email'] or 'Not found'}")
+        print(f"Experience: {resume['Experience (Years)'] or 'Unknown'} years")
+        print(f"Fit Score: {resume['Fit Score']}%")
+        print(f"Key Matches: {resume['Match Points'][:100]}...")
+        print(f"Missing Skills: {resume['Non-Match Points'][:100]}...")
+        print("-" * 40)
+    
+    print(f"\n✅ Processing complete!")
+    print(f"📊 Total resumes processed: {len(resume_data)}")
+    print(f"📁 Excel file saved: {excel_file}")
+    print(f"🎯 Fit scores calculated for all candidates")
+    
+    # Step 7: Show summary statistics
+    if scored_resumes:
+        avg_score = sum(r['Fit Score'] for r in scored_resumes) / len(scored_resumes)
+        max_score = max(r['Fit Score'] for r in scored_resumes)
+        min_score = min(r['Fit Score'] for r in scored_resumes)
+        
+        print(f"\n📈 SCORE STATISTICS:")
+        print(f"   Average Score: {avg_score:.1f}%")
+        print(f"   Highest Score: {max_score:.1f}%")
+        print(f"   Lowest Score: {min_score:.1f}%")
+    
+    print("\n🎉 All done! You can now review the results.")
